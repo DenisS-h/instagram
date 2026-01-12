@@ -1,12 +1,19 @@
 import os
 import smtplib
 import sqlite3
-import psycopg2
 from flask import Flask, request, jsonify, send_from_directory, render_template, session, redirect, url_for, flash
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from urllib.parse import urlparse
+
+# Importación condicional de psycopg2 (solo cuando se necesite PostgreSQL)
+try:
+    import psycopg2
+    PSYCOPG2_AVAILABLE = True
+except ImportError as e:
+    PSYCOPG2_AVAILABLE = False
+    print(f"Advertencia: psycopg2 no está disponible: {e}")
 
 # --- CONFIGURACIÓN ---
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -28,6 +35,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 def get_db_connection():
     """Conecta a PostgreSQL si existe DATABASE_URL, si no usa SQLite."""
     if DATABASE_URL:
+        if not PSYCOPG2_AVAILABLE:
+            print("Error: DATABASE_URL está configurado pero psycopg2 no está disponible. Usando SQLite como fallback.")
+            db_path = os.path.join(BASE_DIR, "phishing.db")
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            return conn
         try:
             conn = psycopg2.connect(DATABASE_URL)
             return conn
