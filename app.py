@@ -79,7 +79,7 @@ init_db()
 
 @app.route('/')
 def index():
-    return "Servidor de Phishing Educativo Activo. <a href='/admin/login'>Ir al Admin</a>"
+    return send_from_directory(BASE_DIR, 'index.html')
 
 @app.route('/style.css')
 def serve_css():
