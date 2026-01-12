@@ -1,0 +1,30 @@
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Datos sensibles
+*.db
+*.sqlite
+*.sqlite3
+data_captured.txt
+
+# Archivos locales
+.env
+local_settings.py
